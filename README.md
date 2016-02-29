@@ -14,6 +14,8 @@ Example:
     $ go run dns_reverse_proxy.go -address :53 \
         -default 8.8.8.8:53 \
         -route .example.com.=8.8.4.4:53 \
+        -remap .service.dc.example.com.=.service.dc.consul. \
+        -route .service.dc.consul.=myconsulserver.dc.example.com:53 \
         -allow-transfer 1.2.3.4,::1
 
 A query for `example.net` or `example.com` will go to `8.8.8.8:53`, the default.

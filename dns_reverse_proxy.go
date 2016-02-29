@@ -39,10 +39,17 @@ var (
 		"List of routes where to send queries (subdomain=IP:port)")
 	routes map[string]string
 
+	remapList = flag.String("remap", "",
+		"List of remaps to translate a domain to another (srcdomain=dstdomain)")
+	remaps map[string]string
+
 	allowTransfer = flag.String("allow-transfer", "",
 		"List of IPs allowed to transfer (AXFR/IXFR)")
 	transferIPs []string
 )
+
+
+func parse_list() {}
 
 func main() {
 	flag.Parse()
@@ -61,6 +68,20 @@ func main() {
 				s[0] += "."
 			}
 			routes[s[0]] = s[1]
+		}
+	}
+
+	remaps = make(map[string]string)
+	if *remapList != "" {
+		for _, s := range strings.Split(*remapList, ",") {
+			s := strings.SplitN(s, "=", 2)
+			if len(s) != 2 {
+				log.Fatal("invalid -remap format")
+			}
+			if !strings.HasSuffix(s[0], ".") {
+				s[0] += "."
+			}
+			remaps[s[0]] = s[1]
 		}
 	}
 
@@ -92,13 +113,23 @@ func route(w dns.ResponseWriter, req *dns.Msg) {
 		dns.HandleFailed(w, req)
 		return
 	}
+	var matched_src, matched_dst string
+	for src, dst := range remaps {
+		if strings.HasSuffix(req.Question[0].Name, src) {
+			matched_src = src
+			matched_dst = dst
+			req.Question[0].Name = strings.Replace(req.Question[0].Name, src, dst, 1)
+			break
+		}
+	}
+
 	for name, addr := range routes {
 		if strings.HasSuffix(req.Question[0].Name, name) {
-			proxy(addr, w, req)
+			proxy(addr, w, req, matched_src, matched_dst)
 			return
 		}
 	}
-	proxy(*defaultServer, w, req)
+	proxy(*defaultServer, w, req, matched_src, matched_dst)
 }
 
 func isTransfer(req *dns.Msg) bool {
@@ -124,7 +155,7 @@ func allowed(w dns.ResponseWriter, req *dns.Msg) bool {
 	return false
 }
 
-func proxy(addr string, w dns.ResponseWriter, req *dns.Msg) {
+func proxy(addr string, w dns.ResponseWriter, req *dns.Msg, src string, dst string) {
 	transport := "udp"
 	if _, ok := w.RemoteAddr().(*net.TCPAddr); ok {
 		transport = "tcp"
@@ -148,9 +179,17 @@ func proxy(addr string, w dns.ResponseWriter, req *dns.Msg) {
 	}
 	c := &dns.Client{Net: transport}
 	resp, _, err := c.Exchange(req, addr)
-	if err != nil {
+	if err != nil && err != dns.ErrTruncated {
+		// go ahead and return truncated so client can retry tcp if they want
+		log.Printf("err: %v\n", err)
 		dns.HandleFailed(w, req)
 		return
+	}
+	if src != "" {
+		resp.Question[0].Name = strings.Replace(resp.Question[0].Name, dst, src, 1)
+		for _, ans := range resp.Answer {
+			ans.Header().Name = strings.Replace(ans.Header().Name, dst, src, 1)
+		}
 	}
 	w.WriteMsg(resp)
 }
